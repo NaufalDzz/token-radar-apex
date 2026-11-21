@@ -3,13 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Token Radar: pre-token protocols ranked by implied value</title>
+<title>Launch Radar Apex: pre-token protocols ranked by implied value</title>
 <link rel="stylesheet" href="app.css">
 </head>
-<body>
-<a class="skip" href="#board">Skip to the board</a>
-<main id="board" tabindex="-1" aria-busy="true"></main>
+<body aria-busy="true">
+<a class="skip" href="#app">Skip to the board</a>
+<!-- data.js: the raw snapshot + board.json's ranks (written by main.ts); model.js: the one engine both sides run. -->
+<div id="app"></div>
 <script src="../data.js"></script>
+<script src="model.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
