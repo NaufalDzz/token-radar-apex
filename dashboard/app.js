@@ -1,20 +1,20 @@
-/* Launch Radar Apex page: refits model.js on the raw snapshot in data.js, proves the result equals board.json
- (checkBoardIntegrity), then draws the board, per-protocol detail and live farm economics. */
+/* Launch Radar Apex: refits model.js on snapshot.json in-browser, proves byte-exact equality with board.json
+ (checkBoardIntegrity), and renders the full-width board, protocol detail view, and live farm scenario engine. */
 (() => {
 'use strict';
 const M = window.RadarModel, DATA = window.RADAR_DATA, app = document.getElementById('app');
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
-const { big, usd } = M, pct = (v, d = 0) => (v * 100).toFixed(d) + '%', x = (v) => '×' + (v >= 10 ? v.toFixed(1) : v.toFixed(2));
+const { big, usd } = M, clip = (v, a, b) => Math.min(b, Math.max(a, v)), pct = (v, d = 0) => (v * 100).toFixed(d) + '%', x = (v) => '×' + (v >= 10 ? v.toFixed(1) : v.toFixed(2));
 const sgn = (v) => (v === null ? '—' : (v > 0 ? '+' : '') + v.toFixed(1) + '%'), cls = (v) => (v > 0 ? 'pos' : v < 0 ? 'neg' : '');
 const age = (d) => (d === null ? 'n/a' : d < 365 ? Math.round(d) + ' d' : (d / 365).toFixed(1) + ' yr');
 const net = (v) => (v >= 0 ? '+' : '−') + usd(Math.abs(v));
 const TIER = { watch: 'Watchlist', early: 'Early', off: 'Off-list' }, q = new URLSearchParams(location.search);
-const DEF = { verdict: 'All', tier: 'All', cat: '', chain: '', text: '', sort: 'rank', dir: 1, dep: 'plan', share: 0.075, weeks: 26 }, st = { tab: 'board', slug: null, ...DEF };
+const DEF = { verdict: 'All', tier: 'All', cat: '', chain: '', text: '', sort: 'rank', dir: 1, dep: 'plan', share: 0.07, weeks: 12 }, st = { tab: 'board', slug: null, ...DEF };
 
 const t0 = performance.now(), R = M.runRadar(DATA.snapshot), refitMs = Math.round(performance.now() - t0);
 const { V, O, rows, ledger } = R, S = DATA.snapshot;
 
-/** Re-verifies this page against board.json: same rows, ranks, values, checksum, watchlist and ledger. */
+/** Proves this page's in-browser refit matches main.ts's board.json on every row, rank, total, and FNV-1a checksum. */
 function checkBoardIntegrity() {
   const mine = M.boardRows(R), want = new Map(DATA.board.map((e) => [e[1], e]));
   const same = mine.filter((r) => { const e = want.get(r.slug); return e && e[0] === r.rank && e[2] === r.implied_value_usd; }).length;
@@ -22,19 +22,19 @@ function checkBoardIntegrity() {
   const total = mine.reduce((a, r) => a + r.implied_value_usd, 0), sum = M.checksum(mine), have = new Set(mine.map((r) => r.slug));
   const wl = S.watchlist.filter((s) => have.has(s)).length, led = Object.values(ledger).reduce((a, b) => a + b, 0);
   return [
-    [same === DATA.board.length && same === mine.length, `this table = board.json: ${same}/${DATA.board.length} rows refitted here (${(refitMs / 1000).toFixed(1)} s)`],
-    [mono, `ranks 1–${mine.length} monotonic`],
-    [total === DATA.total, `total ${big(total)} = ${big(DATA.total)}`],
-    [sum === DATA.checksum, `FNV-1a ${sum} = main.ts`],
-    [wl === S.watchlist.length, `watchlist ${wl}/${S.watchlist.length}`],
-    [led === S.protocols.length, `ledger ${led}/${S.protocols.length}`],
+    [same === DATA.board.length && same === mine.length, `this table = board.json: ${same} of ${DATA.board.length} rows recomputed here (${(refitMs / 1000).toFixed(1)} s)`],
+    [mono, `ranks 1–${mine.length} in order, values never rise`],
+    [total === DATA.total, `totals equal: ${usd(total)}`],
+    [sum === DATA.checksum, `checksum ${sum} = main.ts`],
+    [wl === S.watchlist.length, `watchlist ${wl} of ${S.watchlist.length} ranked`],
+    [led === S.protocols.length, `ledger ${led} of ${S.protocols.length} protocols`],
   ];
 }
 const integrity = checkBoardIntegrity();
 
-/** Every row's plan under the scenario controls: slice, fees, net, hours and verdict recomputed live. */
+/** Recomputes every protocol's costed farm plan under the active scenario controls. */
 const sc = () => ({ dep: st.dep, share: st.share, weeks: st.weeks });
-function applyScenario() { for (const r of rows) r.plan = M.buildFarmPlan(r.p, r.implied, sc()); }
+function applyScenario() { for (const r of rows) r.plan = M.buildFarmPlan(r.p, r.implied, r.odds, sc(), R.exitDropPct); }
 
 const KEYS = { rank: (r) => -r.rank, name: (r) => r.p.name.toLowerCase(), tvl: (r) => r.p.tvl_usd, c7: (r) => r.p.change_7d ?? -1e9, age: (r) => r.f.ageDays ?? -1,
   odds: (r) => r.odds, launch: (r) => r.mult * r.p.tvl_usd, implied: (r) => r.implied, net: (r) => r.plan.net, ph: (r) => r.plan.perHour };
@@ -45,157 +45,188 @@ function visibleRows() {
     .sort((a, b) => { const u = k(a), v = k(b); return (u < v ? 1 : u > v ? -1 : a.rank - b.rank) * st.dir; });
 }
 
-function renderKpis(vis) {
-  const vb = V.steps[0], ob = O.steps[0], f = vis.filter((r) => r.plan.verdict === 'FARM').length, m = vis.filter((r) => r.plan.verdict === 'MARGINAL').length;
+function renderKpis() {
+  const vb = V.steps[0], ob = O.steps[0], f = rows.filter((r) => r.plan.verdict === 'FARM').length, m = rows.filter((r) => r.plan.verdict === 'MARGINAL').length;
   const card = (h, v, s, c = '') => `<div class="kpi"><h3>${h}</h3><b class="${c}">${v}</b><p>${s}</p></div>`;
   return `<section class="kpis">${[
-    card('Out-of-sample miss · walk-forward', `${x(V.best.wf)}`, `vs ${x(vb.wf)} flat; left-out ${x(V.best.loo)} vs ${x(vb.loo)}`),
-    card('Is the printed range honest?', `${pct(V.calib.wf50)} · ${pct(V.calib.wf80)}`, 'newer caps inside P25–P75 · P10–P90 (stated 50% · 80%)'),
-    card('Token odds · Brier, walk-forward', O.best.wf.toFixed(3), `vs ${ob.wf.toFixed(3)} base rate; ${pct(O.best.wfAcc)} of newer peers right`),
-    card('Terms that survived both tests', `${V.terms.length}/5 · ${O.terms.length}/5`, 'value · odds; the negative control failed both'),
-    card('Worth farming, this scenario', `${f} of ${vis.length}`, `${m} marginal, ${vis.length - f - m} skip; FARM beats $15/h after gas & fees`, 'pos'),
-    card('Watchlist ranked', `${S.watchlist.length} / ${S.watchlist.length}`, `+${rows.length - S.watchlist.length} pre-token rows, early or off-list`),
-  ].join('')}</section>`;
+    card('Out-of-sample miss · walk-forward', `${x(V.best.wf)} <span>vs ${x(vb.wf)} flat</span>`, `fitted on ${V.n} clean standalone traded tokens; left-out ${x(V.best.loo)} vs ${x(vb.loo)}`),
+    card('Is the printed range honest?', `${pct(V.calib.wf50)} · ${pct(V.calib.wf80)}`, 'of later-listed caps fall inside P25–P75 · P10–P90 (stated 50% · 80%)'),
+    card('Token odds vs base rate, Brier', `${O.best.wf.toFixed(3)} <span>vs ${ob.wf.toFixed(3)}</span>`, `walk-forward; ${pct(O.best.wfAcc)} of later peers called right vs ${pct(ob.extra.wfAcc)}`),
+    card('Terms that survived both tests', `${V.terms.length} of 6 · ${O.terms.length} of 5`, 'value model · token odds; negative control failed both'),
+    card('Worth farming, this scenario', `${f} of ${rows.length}`, `net beats a 4% T-bill and $25/h; ${m} marginal, ${rows.length - f - m} skip`, 'pos'),
+    card('Watchlist ranked', `${S.watchlist.length} / ${S.watchlist.length}`, `plus ${rows.length - S.watchlist.length} pre-token protocols (${ledger.early} early, ${ledger.off} off-list)`),
+  ].join('')}</section>
+  <p class="formula"><b>Implied value</b> = TVL × fitted multiple (if a token launches) × conditional launch odds (from peer survival across ${O.n} standalone protocols). Every coefficient is fitted on this snapshot and tested held-out.</p>`;
 }
 
-const LEDGER = [['watch', 'Ranked · watchlist', 'c1'], ['early', 'Ranked · early, below $50M', 'c2'], ['off', 'Ranked · off-list', 'c3'], ['trade', 'Token trades · priced comp', 'c4'],
-  ['recorded', 'Token recorded · no cap', 'c5'], ['bridge', 'Out · bridge', 'c6'], ['lst', 'Out · liquid staking', 'c7'], ['cex', 'Out · exchange', 'c8'], ['wrap', 'Out · versioned or wrapped', 'c9']];
-function renderLedger() {
-  const n = S.protocols.length, bar = LEDGER.map(([k, , c]) => `<i class="${c}" style="width:${(ledger[k] / n) * 100}%"></i>`).join('');
-  return `<section class="card"><h2>Protocol accounting <em>${n} of ${n}, each in one group</em></h2><div class="lbar">${bar}</div>
-    <ul class="legend">${LEDGER.map(([k, l, c]) => `<li><i class="${c}"></i>${l}<b>${ledger[k] ?? 0}</b></li>`).join('')}</ul></section>`;
+const LEDGER = [['watch', 'Ranked · watchlist', 'c1'], ['early', 'Ranked · early (<$50M)', 'c2'], ['off', 'Ranked · off-list (parent)', 'c3'], ['trade', 'Token trades · clean comp', 'c4'],
+  ['recorded', 'Token recorded · other/no cap', 'c5'], ['bridge', 'Out · bridge', 'c6'], ['lst', 'Out · liquid staking', 'c7'], ['cex', 'Out · exchange', 'c8'], ['wrap', 'Out · versioned/wrapped', 'c9']];
+function renderAccounting() {
+  const n = S.protocols.length, bar = LEDGER.map(([k, , c]) => `<i class="${c}" style="width:${((ledger[k] ?? 0) / n) * 100}%"></i>`).join('');
+  const ribbon = integrity.map(([ok, t]) => `<span class="${ok ? 'ok' : 'bad'}">${ok ? '✓' : '✗'} ${t}</span>`).join('');
+  return `<section class="card acct"><div class="ah"><h2>Protocol accounting</h2><em>all ${n} snapshot protocols in exactly one group: ${rows.length} ranked pre-token, ${ledger.trade + ledger.recorded} record a token, ${ledger.bridge + ledger.lst + ledger.cex + ledger.wrap} excluded by house rule</em></div>
+    <div class="lbar">${bar}</div>
+    <ul class="legend">${LEDGER.map(([k, l, c]) => `<li><i class="${c}"></i>${l} <b>${ledger[k] ?? 0}</b></li>`).join('')}</ul>
+    <div class="ribbon">${ribbon}</div></section>`;
 }
 
 function evidenceTable(a, isOdds) {
-  const f = (v) => (isOdds ? v.toFixed(3) : x(v)), lab = (t) => (t === 'base' ? (isOdds ? 'base rate of peers' : 'flat median multiple') : R.TERMS[t]);
-  return `<table class="ev"><tr><th>Term, in order</th><th>${isOdds ? '10-fold' : 'Leave-1-out'}</th><th>Walk-fwd</th><th></th></tr>${a.steps.map((s) =>
-    `<tr><td>${lab(s.term)}</td><td>${f(s.loo)}</td><td>${f(s.wf)}</td><td class="${s.status === 'kept' ? 'pos' : s.term === 'ctrl' || s.status === 'baseline' ? 'mut' : 'neg'}">${s.status}</td></tr>`).join('')}</table>`;
-}
-function renderEvidence() {
-  const c = V.calib;
-  return `<section class="card"><h2>Out-of-sample evidence <em>kept only if both tests improve</em></h2>
-    <h4>Value if a token launches · typical miss, ${V.n} traded tokens</h4>${evidenceTable(V, false)}
-    <h4>Token odds · Brier (lower is better), ${O.n} standalone peers, ${O.pos} record a token</h4>${evidenceTable(O, true)}
-    <p class="cal">Range check: P25–P75 holds <b>${pct(c.loo50)}</b> left-out / <b>${pct(c.wf50)}</b> newer; P10–P90 <b>${pct(c.loo80)}</b> / <b>${pct(c.wf80)}</b>; within ×3 <b>${pct(c.looX3)}</b> / <b>${pct(c.wfX3)}</b>. Size slope ${V.model.b[0]?.toFixed(2)} ± ${V.se?.[0]?.toFixed(2)} (s.e., 120 bootstrap refits).</p></section>`;
+  const f = (v, ex, wf) => isOdds ? `${v.toFixed(3)} <s>(${pct(wf ? ex.wfAcc : ex.cvAcc)})</s>` : x(v);
+  const lab = (t) => (t === 'base' ? (isOdds ? 'base rate of peers' : 'flat median multiple') : R.TERMS[t]);
+  return `<table class="ev"><tr><th>Term, added in order</th><th>${isOdds ? 'Ten-fold' : 'Leave-1-out'}</th><th>Walk-forward</th><th></th></tr>${a.steps.map((s) =>
+    `<tr><td>${lab(s.term)}</td><td>${f(s.loo, s.extra, false)}</td><td>${f(s.wf, s.extra, true)}</td><td class="${s.status === 'kept' ? 'pos' : s.term === 'ctrl' || s.status === 'baseline' ? 'mut' : 'neg'}">${s.status}</td></tr>`).join('')}</table>`;
 }
 
-/** Market cap vs TVL, log-log: grey traded comps, cyan fitted size curve with its P25–P75 band, amber board top 12. */
-function renderScatter() {
-  const W = 404, H = 196, l = 34, b = 18, X0 = 6.5, X1 = 10.5, Y0 = 4.5, Y1 = 11;
+/** Compact log-log Market Cap vs TVL scatter plot for the 3-column evidence card. */
+function renderMiniScatter() {
+  const W = 380, H = 122, l = 34, b = 16, X0 = 6.5, X1 = 10.5, Y0 = 4.5, Y1 = 10.8;
   const px = (v) => l + ((v - X0) / (X1 - X0)) * (W - l - 6), py = (v) => H - b - ((v - Y0) / (Y1 - Y0)) * (H - b - 6);
-  const curve = (off) => [X0, X1].map((t) => `${px(t)},${py(t + M.linear(V.model, M.columns({ size: t - 8, cat: '', mom: 0, age: 0, ch: 0, ctrl: 0 }, V.terms, V.levels)) + off)}`);
-  const dots = V.D.map((d) => `<circle cx="${px(Math.log10(d.tvl)).toFixed(1)}" cy="${py(Math.log10(d.p.mcap_usd)).toFixed(1)}" r="2.3" class="cp"><title>${esc(d.p.name)}</title></circle>`).join('');
-  const top = rows.slice(0, 12).map((r) => `<circle cx="${px(Math.log10(r.p.tvl_usd)).toFixed(1)}" cy="${py(Math.log10(r.implied)).toFixed(1)}" r="3.2" class="tp"><title>${esc(r.p.name)}</title></circle>`).join('');
-  const grid = [7, 8, 9, 10].map((t) => `<line x1="${px(t)}" x2="${px(t)}" y1="6" y2="${H - b}"/><text x="${px(t)}" y="${H - 5}">${['$10M', '$100M', '$1B', '$10B'][t - 7]}</text>`).join('')
-    + [5, 7, 9, 11].map((t) => `<line x1="${l}" x2="${W - 6}" y1="${py(t)}" y2="${py(t)}"/><text x="${l - 4}" y="${py(t) + 3}" class="ya">${['$100k', '$10M', '$1B', '$100B'][(t - 5) / 2]}</text>`).join('');
-  return `<section class="card sc"><h2>Market cap vs TVL <em>log-log · ${V.n} traded tokens</em></h2><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="market cap against TVL">
-    <g class="gr">${grid}</g><polygon class="band" points="${[...curve(V.q.p25), ...curve(V.q.p75).reverse()].join(' ')}"/><polyline class="fit" points="${curve(0).join(' ')}"/>${dots}${top}</svg>
-    <p class="key"><i class="cp"></i>traded comps <i class="fitk"></i>fitted curve ± P25–P75 <i class="tp"></i>board top 12, implied</p></section>`;
+  const curve = (off) => [X0, X1].map((t) => `${px(t).toFixed(1)},${py(t + M.linear(V.model, M.columns({ size: t - 8, cat: '', fam: '', mom: 0, age: 0, ch: 0, ctrl: 0 }, V.terms, V.lv)) + off).toFixed(1)}`);
+  const dots = V.D.map((d) => `<circle cx="${px(Math.log10(d.tvl)).toFixed(1)}" cy="${py(Math.log10(d.p.mcap_usd)).toFixed(1)}" r="2" class="cp"/>`).join('');
+  const top = rows.slice(0, 12).map((r) => `<circle cx="${px(Math.log10(r.p.tvl_usd)).toFixed(1)}" cy="${py(Math.log10(r.implied)).toFixed(1)}" r="2.8" class="tp"/>`).join('');
+  const grid = [7, 8, 9, 10].map((t) => `<line x1="${px(t)}" x2="${px(t)}" y1="4" y2="${H - b}"/><text x="${px(t)}" y="${H - 4}">${['$10M', '$100M', '$1B', '$10B'][t - 7]}</text>`).join('')
+    + [5, 7, 9].map((t) => `<line x1="${l}" x2="${W - 6}" y1="${py(t)}" y2="${py(t)}"/><text x="${l - 4}" y="${py(t) + 3}" class="ya">${['$100k', '$10M', '$1B'][(t - 5) / 2]}</text>`).join('');
+  return `<svg class="scsvg" viewBox="0 0 ${W} ${H}" role="img" aria-label="market cap vs TVL log-log"><g class="gr">${grid}</g><polygon class="band" points="${[...curve(V.q.p25), ...curve(V.q.p75).reverse()].join(' ')}"/><polyline class="fit" points="${curve(0).join(' ')}"/>${dots}${top}</svg>
+    <p class="key"><i class="cp"></i>${V.n} traded comps <i class="fitk"></i>size curve ± P25–P75 <i class="tp"></i>top 12 implied</p>`;
+}
+
+function renderEvidence() {
+  const c = V.calib;
+  return `<section class="card evid"><div class="ah"><h2>Out-of-sample evidence</h2><em>a term is kept only if it lowers held-out error in BOTH tests: cross-validation and chronological walk-forward</em></div>
+    <div class="evgrid">
+      <div><h4>Value if a token launches · typical miss, ${V.n} clean traded tokens</h4>${evidenceTable(V, false)}</div>
+      <div><h4>Token odds · Brier (share right), ${O.n} standalone peers</h4>${evidenceTable(O, true)}</div>
+      <div><h4>Range honesty &amp; log-log fit (${R.bootN} bootstrap refits)</h4>
+        <table class="ev ev3"><tr><th>Share of real caps</th><th>Leave-1-out</th><th>Walk-forward</th></tr>
+          <tr><td>within ×3 of model</td><td>${pct(c.looX3)}</td><td>${pct(c.wfX3)}</td></tr>
+          <tr><td>inside P25–P75 (50%)</td><td>${pct(c.loo50)}</td><td>${pct(c.wf50)}</td></tr>
+          <tr><td>inside P10–P90 (80%)</td><td>${pct(c.loo80)}</td><td>${pct(c.wf80)}</td></tr></table>
+        <p class="cal">Multiple at $100M TVL: <b>${x(10 ** V.model.c0)}</b>; size slope <b>${V.model.b[0]?.toFixed(2)} ± ${V.se?.[0]?.toFixed(2)}</b>. Odds use peer survival (age, family, TVL, 7d growth).</p>
+        ${renderMiniScatter()}</div>
+    </div></section>`;
 }
 
 const seg = (key, opts) => `<div class="seg">${opts.map(([v, l]) => `<button data-set="${key}:${v}" class="${String(st[key]) === String(v) ? 'on' : ''}">${l}</button>`).join('')}</div>`;
-function renderControls() {
+function renderControls(vis) {
   const n = (v) => rows.filter((r) => v === 'All' || r.plan.verdict === v).length, cats = [...new Set(rows.map((r) => r.p.category ?? 'None'))].sort();
   const chains = [...new Set(rows.flatMap((r) => r.p.chains))].sort(), opt = (a, cur, all) => `<option value="">${all}</option>` + a.map((v) => `<option${v === cur ? ' selected' : ''}>${esc(v)}</option>`).join('');
-  return `<div class="bar">${seg('verdict', ['All', 'FARM', 'MARGINAL', 'SKIP'].map((v) => [v, `${v === 'All' ? 'All' : v[0] + v.slice(1).toLowerCase()} <s>${n(v)}</s>`]))}
-    ${seg('tier', [['All', 'All tiers'], ['watch', 'Watchlist'], ['early', 'Early &lt;$50M'], ['off', 'Off-list']])}
-    <input id="find" placeholder="Search name, chain, category" value="${esc(st.text)}"><select data-key="cat">${opt(cats, st.cat, 'All categories')}</select><select data-key="chain">${opt(chains, st.chain, 'All chains')}</select></div>
-    <div class="bar"><label>Deposit</label>${seg('dep', [['plan', 'Plan 0.02% TVL'], [1000, '$1,000'], [5000, '$5,000'], [25000, '$25,000']])}
-    <label>Drop share</label>${seg('share', [[0.05, '5%'], [0.075, '7.5%'], [0.1, '10%']])}<label>Horizon</label>${seg('weeks', [[12, '12w'], [26, '26w'], [52, '52w']])}
-    <button data-act="reset">Reset</button><button data-act="csv">CSV</button><button data-act="json">JSON</button></div>`;
+  const filtered = st.verdict !== 'All' || st.tier !== 'All' || st.cat || st.chain || st.text || st.sort !== 'rank';
+  const t = vis.reduce((a, r) => a + r.implied, 0), tv = vis.reduce((a, r) => a + r.p.tvl_usd, 0);
+  return `<div class="ctrl"><div class="bar">${seg('verdict', ['All', 'FARM', 'MARGINAL', 'SKIP'].map((v) => [v, `${v === 'All' ? 'All' : v[0] + v.slice(1).toLowerCase()} <s>${n(v)}</s>`]))}
+    ${seg('tier', [['All', 'All tiers'], ['watch', 'Watchlist 40'], ['early', 'Early <$50M'], ['off', 'Off-list 20']])}
+    <label>Deposit</label>${seg('dep', [['plan', 'Plan 0.02% TVL'], [1000, '$1k'], [5000, '$5k'], [25000, '$25k']])}
+    <label>Drop</label>${seg('share', [[0.035, '3.5%'], [0.07, '7%'], [0.14, '14%']])}
+    <label>Horizon</label>${seg('weeks', [[12, '12w'], [26, '26w'], [52, '52w']])}</div>
+    <div class="bar"><input id="find" placeholder="Search name, chain, category" value="${esc(st.text)}"><select data-key="cat">${opt(cats, st.cat, 'All categories')}</select><select data-key="chain">${opt(chains, st.chain, 'All chains')}</select>
+    <button data-act="reset">Reset</button><button data-act="csv">CSV</button><button data-act="json">JSON</button>
+    ${filtered ? `<span class="chip">Filtered to ${[st.verdict !== 'All' && st.verdict + ' verdict', st.tier !== 'All' && TIER[st.tier], st.cat, st.chain, st.text && `“${esc(st.text)}”`].filter(Boolean).join(' · ') || 'All rows'} · sorted by ${st.sort === 'ph' ? 'net / hour' : st.sort}, ${st.dir > 0 ? 'high to low' : 'low to high'}</span>` : ''}
+    <span id="status">${vis.length} of ${rows.length} rows · ${big(tv)} TVL · ${big(t)} implied</span></div></div>`;
 }
 
 function renderTable(vis) {
-  const lo = Math.log10(rows[rows.length - 1].implied * 10 ** V.q.p25), hi = Math.log10(rows[0].implied * 10 ** V.q.p75), span = (v) => ((Math.log10(v) - lo) / (hi - lo)) * 100;
+  const lo = Math.log10(rows[rows.length - 1].implied * 10 ** V.q.p25), hi = Math.log10(rows[0].implied * 10 ** V.q.p75), span = (v) => clip(((Math.log10(v) - lo) / (hi - lo)) * 100, 0, 100);
   const th = (k, l, c = '') => `<th data-sort="${k}" class="${c}${st.sort === k ? ' on' : ''}">${l}${st.sort === k ? (st.dir > 0 ? ' ↓' : ' ↑') : ''}</th>`;
   const body = vis.map((r) => {
     const a = span(r.implied * 10 ** V.q.p25), z = span(r.implied * 10 ** V.q.p75), P = r.plan;
     return `<tr data-slug="${esc(r.p.slug)}"><td class="rk">${r.rank}<small>${r.rankLo}–${r.rankHi}</small></td>
-      <td class="pn"><b>${esc(r.p.name)}</b> <span class="tg ${r.tier}">${TIER[r.tier]}</span><small>${esc(r.p.category ?? 'No category')} · ${esc(r.p.chains[0] ?? '')}${r.p.chains.length > 1 ? ' +' + (r.p.chains.length - 1) : ''}</small></td>
+      <td class="pn"><b>${esc(r.p.name)}</b> <span class="tg ${r.tier}">${TIER[r.tier]}</span>${r.famF < 1 ? `<span class="tg par">Parent ${x(r.famF)}</span>` : ''}<small>${esc(r.p.category ?? 'No category')} · ${esc(r.p.chains[0] ?? '')}${r.p.chains.length > 1 ? ' +' + (r.p.chains.length - 1) : ''}</small></td>
       <td>${big(r.p.tvl_usd)}</td><td class="${cls(r.p.change_7d)}">${sgn(r.p.change_7d)}</td><td>${age(r.f.ageDays)}</td>
       <td><span class="ob"><i style="width:${pct(r.odds)}"></i></span>${pct(r.odds)}</td><td>${big(r.mult * r.p.tvl_usd)}</td>
-      <td class="iv"><b>${big(r.implied)}</b><span class="rb"><i style="left:${a}%;width:${z - a}%"></i><u style="left:${span(r.implied)}%"></u></span><small>${big(r.implied * 10 ** V.q.p25)}–${big(r.implied * 10 ** V.q.p75)}</small></td>
-      <td><span class="pill ${P.verdict}">${P.verdict}</span> <b class="${cls(P.net)}">${net(P.net)}</b><small>${usd(P.slice)} drop − ${usd(P.fees)}</small></td><td class="${cls(P.perHour)}">${net(P.perHour)}</td></tr>`;
+      <td class="iv"><div class="ivrow"><b>${big(r.implied)}</b><small>${big(r.implied * 10 ** V.q.p25)}–${big(r.implied * 10 ** V.q.p75)}</small></div><span class="rb"><i style="left:${a}%;width:${Math.max(2, z - a)}%"></i><u style="left:${span(r.implied)}%"></u></span></td>
+      <td class="vd"><span class="pill ${P.verdict}">${P.verdict}</span> <b class="${cls(P.net)}">${net(P.net)}</b><small>${usd(P.slice)} drop − ${usd(P.fees)} fees</small></td>
+      <td class="ph ${cls(P.perHour)}">${net(P.perHour)}</td></tr>`;
   }).join('');
-  return `<table class="board"><thead><tr>${th('rank', '# · range')}${th('name', 'Protocol', 'l')}${th('tvl', 'TVL')}${th('c7', '7D')}${th('age', 'No-token age')}${th('odds', 'Token odds')}${th('launch', 'If it launches')}${th('implied', 'Implied · P25–P75')}${th('net', 'Verdict · net of fees')}${th('ph', 'Net / hour')}</tr></thead><tbody>${body}</tbody></table>`;
+  return `<div class="tw"><table class="board"><thead><tr>${th('rank', '# · range')}${th('name', 'Protocol', 'l')}${th('tvl', 'TVL')}${th('c7', '7D')}${th('age', 'No-token age')}${th('odds', 'Token odds')}${th('launch', 'If it launches')}${th('implied', 'Implied value · P25–P75')}${th('net', 'Verdict · net of fees')}${th('ph', 'Net / hour')}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function renderBoardView() {
-  const vis = visibleRows(), filtered = st.verdict !== 'All' || st.tier !== 'All' || st.cat || st.chain || st.text;
-  const t = vis.reduce((a, r) => a + r.implied, 0), tv = vis.reduce((a, r) => a + r.p.tvl_usd, 0);
-  const chips = `<div class="th"><span id="status">${vis.length} of ${rows.length} rows · ${big(tv)} TVL · ${big(t)} implied</span>${filtered || st.sort !== 'rank' ? `<span class="chip">${[st.verdict !== 'All' && st.verdict + ' verdict', st.tier !== 'All' && TIER[st.tier], st.cat, st.chain, st.text && `“${esc(st.text)}”`].filter(Boolean).join(' · ') || 'All rows'} · sorted by ${st.sort === 'ph' ? 'net / hour' : st.sort}, ${st.dir > 0 ? 'high to low' : 'low to high'}</span>` : ''}</div>`;
-  const ribbon = `<div class="ribbon">${integrity.map(([ok, t]) => `<span class="${ok ? 'ok' : 'bad'}">${ok ? '✓' : '✗'} ${t}</span>`).join('')}</div>`;
-  return `<div class="split"><div class="main">${renderKpis(vis)}${ribbon}${renderControls()}<div class="tw">${chips}${renderTable(vis)}</div></div>
-    <aside>${renderLedger()}${renderEvidence()}${renderScatter()}</aside></div>`;
+  const vis = visibleRows();
+  return `${renderKpis()}${renderAccounting()}${renderEvidence()}${renderControls(vis)}${renderTable(vis)}`;
 }
 
-function contributions(model, terms, levels, f) {
-  const c = M.columns(f, terms, levels), out = []; let j = 0;
-  for (const t of terms) { const w = t === 'cat' ? levels.length : 1; let v = 0; for (let k = 0; k < w; k++, j++) v += model.b[j] * c[j]; out.push([t, v]); }
-  return out;
-}
 function nearestPeers(r) {
-  const lt = Math.log10(r.p.tvl_usd), all = V.D.map((d, j) => ({ d, c: V.comps[j], gap: Math.abs(Math.log10(d.tvl) - lt) + (d.p.category === r.p.category ? 0 : 1.5) }));
-  return all.sort((a, b) => a.gap - b.gap).slice(0, 7);
+  const lt = Math.log10(r.p.tvl_usd), all = V.D.map((d, j) => ({ d, c: V.comps[j], gap: Math.abs(Math.log10(d.tvl) - lt) + (d.p.category === r.p.category ? 0 : d.f.fam === r.f.fam ? 0.6 : 1.8) }));
+  return all.sort((a, b) => a.gap - b.gap).slice(0, 8);
 }
 
 function renderDetail(r) {
-  const P = r.plan, vc = contributions(V.model, V.terms, V.levels, r.f), oc = contributions(O.model, O.terms, O.levels, r.f), dropped = V.steps.filter((s) => s.status === 'not kept');
-  const line = (h, s, v, c = '') => `<tr class="${c}"><td><b>${h}</b><small>${s}</small></td><td>${v}</td></tr>`, gl = { age: `age ${age(r.f.ageDays)}`, size: `TVL ${big(r.p.tvl_usd)}`, mom: `7d ${sgn(r.p.change_7d)}`, cat: esc(r.p.category ?? 'no category'), ch: `${r.p.chains.length} chains` };
+  const P = r.plan, dropped = V.steps.filter((s) => s.status === 'tested, not kept');
+  const line = (h, s, v, c = '') => `<tr class="${c}"><td><b>${h}</b><small>${s}</small></td><td>${v}</td></tr>`;
   let cum = 0;
-  const steps = P.steps.map((s, i) => { cum += s.cost; return `<li><i>${i + 1}</i><div><b>${s.tag}</b> ${esc(s.text)}<p><span>COST ${usd(s.cost)}</span><span>TIME ${s.min >= 120 ? (s.min / 60).toFixed(1) + ' h' : s.min + ' min'}</span><span>CUMULATIVE ${usd(cum)}</span></p></div></li>`; }).join('');
-  const peers = nearestPeers(r).map(({ d, c }) => `<tr><td>${esc(d.p.name)} <small>${esc(d.p.symbol ?? '')}</small></td><td>${esc((d.p.category ?? '').slice(0, 16))}</td><td>${big(d.tvl)}</td><td>${big(d.p.mcap_usd)}</td><td>${x(10 ** d.y)}</td><td>${x(10 ** c.held)}</td><td class="${Math.abs(d.y - c.held) < Math.log10(3) ? 'pos' : 'neg'}">${x(10 ** (d.y - c.held))}</td></tr>`).join('');
+  const steps = P.steps.map((s, i) => { cum += s.cost; return `<li><i>${i + 1}</i><div><b>${s.tag}</b> ${esc(s.text)}<p><span>COST ${s.cost > 0 ? usd(s.cost) : 'free'}</span><span>TIME ${s.min >= 120 ? (s.min / 60).toFixed(1) + ' h' : s.min + ' min'}</span><span>CUMULATIVE ${usd(cum)}</span></p></div></li>`; }).join('');
+  const peers = nearestPeers(r).map(({ d, c }) => `<tr><td>${esc(d.p.name)} <small>${esc(d.p.symbol ?? '')}</small></td><td>${esc((d.p.category ?? '').slice(0, 16))}</td><td>${big(d.tvl)}</td><td>${big(d.p.mcap_usd)}</td><td>${x(10 ** d.y)}</td><td class="${Math.abs(d.y - c.held) < Math.log10(3) ? 'pos' : 'neg'}">${x(10 ** (d.y - c.held))}</td></tr>`).join('');
   const tile = (h, v, c = '') => `<div><h5>${h}</h5><b class="${c}">${v}</b></div>`;
-  return `<div class="crumb"><a href="#" data-act="back">← Board</a> / ${esc(r.p.name)}</div><div class="detail"><div class="col">
-    <section class="card hd"><div><p class="am">#${r.rank} of ${rows.length} by implied value · rank ${r.rankLo}–${r.rankHi} across 120 bootstrap refits</p><h1>${esc(r.p.name)}</h1>
-      <p class="tags"><span class="tg ${r.tier}">${TIER[r.tier]}</span><span class="pill ${P.verdict}">${P.verdict}</span>${[r.p.category ?? 'No category', ...r.p.chains.slice(0, 4)].map((c) => `<span class="tg">${esc(c)}</span>`).join('')}</p>
-      <div class="stats">${tile('TVL', big(r.p.tvl_usd))}${tile('7-day change', sgn(r.p.change_7d), cls(r.p.change_7d))}${tile('Listed since', r.p.listed_at ?? 'n/a')}${tile('No-token age', age(r.f.ageDays))}</div></div>
-      <div class="ivc"><h5>Implied value · a model estimate</h5><b>${usd(r.implied)}</b><div class="stats">${tile('If a token launches', big(r.mult * r.p.tvl_usd))}${tile('Token odds', pct(r.odds))}${tile('P25–P75', big(r.implied * 10 ** V.q.p25) + '–' + big(r.implied * 10 ** V.q.p75))}${tile('P10–P90', big(r.implied * 10 ** V.q.p10) + '–' + big(r.implied * 10 ** V.q.p90))}</div>
-      <p class="pos">✓ Recomputed in this browser: equals board.json. No token on record is not proof of none; the odds are its peers' record.</p></div></section>
-    <section class="card"><h2>How the figure is made</h2><table class="dc">
-      ${line('TVL', `DefiLlama, ${S.as_of}`, big(r.p.tvl_usd))}
-      ${line('Base multiple', `fitted on ${V.n} traded tokens, read at $100M TVL; held-out miss ${x(V.best.loo)} left-out, ${x(V.best.wf)} walk-forward`, x(10 ** V.model.c0))}
-      ${vc.map(([t, v]) => line(R.TERMS[t].slice(2), t === 'size' ? `slope ${V.model.b[0].toFixed(2)} ± ${V.se[0].toFixed(2)} × log10(${big(r.p.tvl_usd)} / $100M)` : 'ridge-shrunk', x(10 ** v))).join('')}
-      ${line('= Value if a token launches', `TVL × ${x(r.mult)}; half of held-out caps fall in ${big(r.mult * r.p.tvl_usd * 10 ** V.q.p25)}–${big(r.mult * r.p.tvl_usd * 10 ** V.q.p75)}`, big(r.mult * r.p.tvl_usd), 'am')}
-      ${line('× Token odds', `peers' record (${O.pos} of ${O.n} record a token): ${oc.map(([t, v]) => `${gl[t]} ${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(2)}`).join(', ')} in log-odds from base ${O.model.c0.toFixed(2)}`, pct(r.odds))}
-      ${r.famF < 1 ? line('× Family factor', `off-list: a token family already exists (${R.fam.fresh} of ${R.fam.kin} kin tokens were a new ticker)`, x(r.famF)) : ''}
-      ${line('= Implied value', `rank ${r.rankLo}–${r.rankHi} across bootstrap refits of both models`, big(r.implied), 'am')}
-    </table><p class="note">Tested, not used in the value: ${dropped.map((s) => `${R.TERMS[s.term].slice(2)} (${x(s.loo)}, ${x(s.wf)})`).join('; ')}.</p></section>
-    <section class="card"><h2>Nearest traded peers · their tokens trade</h2><table class="pt"><tr><th>Token</th><th>Category</th><th>TVL</th><th>Market cap</th><th>Cap / TVL</th><th>Held-out fit</th><th>Actual ÷ fit</th></tr>${peers}</table></section></div>
-    <div class="col"><section class="card"><h2>Farm verdict <span class="pill ${P.verdict}">${P.verdict}</span><em>${usd(P.deposit)} deposit · ${pct(st.share, 1)} drop share · ${P.weeks} weeks · on ${esc(P.chain)}</em></h2>
-      <p class="vs ${P.verdict}">${P.verdict}: ${usd(P.deposit)} for ${P.weeks} weeks buys a modelled drop of ${usd(P.slice)} for ${usd(P.fees)} of gas and fees and ${P.hours.toFixed(1)} h of work: <b>${net(P.net)} net (${net(P.perHour)}/h)</b>. Fees are covered while the drop share stays above ${pct(P.breakEvenShare, 2)}; the same money in a 4% T-bill earns ${usd(P.tbill)}.</p>
-      <div class="tiles">${tile('At risk', usd(P.deposit))}${tile('Gas + fees', usd(P.fees))}${tile('Modelled drop', usd(P.slice))}${tile('Net of fees', net(P.net), cls(P.net))}${tile('Hands-on', P.hours.toFixed(1) + ' h')}${tile('Net per hour', net(P.perHour), cls(P.perHour))}</div>
-      <p class="note">Drop = implied value × drop share × deposit ÷ TVL = ${big(r.implied)} × ${pct(st.share, 1)} × ${usd(P.deposit)} ÷ ${big(r.p.tvl_usd)}. FARM: net positive and at least $15 an hour; SKIP: gas and fees exceed the drop.</p></section>
-    <section class="card"><h2>Net of fees by drop share × deposit <em>${P.weeks} weeks; the live scenario is outlined</em></h2>${sensitivityGrid(r)}</section>
-    <section class="card"><h2>Costed farm plan · ${P.steps.length} steps <em>gas at ${usd(P.gas)} a transaction on ${esc(P.chain)}</em></h2><ol class="steps">${steps}</ol></section>
-    <section class="card"><h2>Risks the figures carry</h2><ul class="risk"><li>Odds ${pct(r.odds)}: ${pct(1 - r.odds)} of peers like it record no token, so the drop can be zero; the ${usd(P.fees)} of fees is the sure loss.</li><li>P10–P90 spans ×${(10 ** (V.q.p90 - V.q.p10)).toFixed(0)}: size the deposit to what you can lose, not to the midpoint.</li><li>TVL moved ${sgn(r.p.change_7d)} in the week; the exit rule fires at ${big(r.p.tvl_usd * 0.75)}. Contract risk is never priced here.</li></ul></section></div></div>`;
+  return `<div class="crumb"><a href="#" data-act="back">← Board</a> / ${esc(r.p.name)}</div>
+  <section class="hero">
+    <div class="card">
+      <p class="am">#${r.rank} of ${rows.length} by implied value · rank ${r.rankLo}–${r.rankHi} across ${R.bootN} bootstrap refits</p>
+      <h1>${esc(r.p.name)}</h1>
+      <p class="tags"><span class="tg ${r.tier}">${TIER[r.tier]}</span><span class="pill ${P.verdict}">${P.verdict}</span>${[r.p.category ?? 'No category', r.f.fam, ...r.p.chains.slice(0, 4)].map((c) => `<span class="tg">${esc(c)}</span>`).join('')}</p>
+      <div class="stats">${tile('TVL', big(r.p.tvl_usd))}${tile('7-day change', sgn(r.p.change_7d), cls(r.p.change_7d))}${tile('Listed since', r.p.listed_at ?? 'n/a')}${tile('No-token age', age(r.f.ageDays))}</div>
+    </div>
+    <div class="card ivcard">
+      <h5>Implied value · a model estimate</h5>
+      <b>${usd(r.implied)}</b>
+      <div class="stats">${tile('If a token launches', big(r.mult * r.p.tvl_usd))}${tile('Token odds', pct(r.odds))}${tile('P25–P75', big(r.implied * 10 ** V.q.p25) + '–' + big(r.implied * 10 ** V.q.p75))}${tile('P10–P90', big(r.implied * 10 ** V.q.p10) + '–' + big(r.implied * 10 ** V.q.p90))}</div>
+      <p class="pos">✓ Recomputed in this browser: equals board.json. DefiLlama records no token for it, which is not proof it has none; odds are its peers' survival record.</p>
+    </div>
+  </section>
+  <div class="detail">
+    <div class="col">
+      <section class="card"><h2>How the figure is made</h2><table class="dc">
+        ${line('TVL', `DefiLlama snapshot, ${S.as_of}`, big(r.p.tvl_usd))}
+        ${line('Base multiple', `fitted on ${V.n} clean standalone traded tokens, read at $100M TVL; held-out miss ${x(V.best.loo)} left-out, ${x(V.best.wf)} walk-forward`, x(10 ** V.model.c0))}
+        ${line('Size curve, log TVL', `slope ${V.model.b[0].toFixed(2)} ± ${V.se[0].toFixed(2)} × log10(${big(r.p.tvl_usd)} / $100M)`, x(10 ** (V.model.b[0] * r.f.size)))}
+        ${line('= Value if a token launches', `TVL × ${x(r.mult)}; half of held-out caps fall in ${big(r.mult * r.p.tvl_usd * 10 ** V.q.p25)}–${big(r.mult * r.p.tvl_usd * 10 ** V.q.p75)}`, big(r.mult * r.p.tvl_usd), 'am')}
+        ${line('× Conditional token odds', `peers of ${esc(r.f.fam)}, TVL & 7d growth: ${pct(r.pNow)} record a token by age ${age(r.f.ageDays)}, ${pct(r.pMax)} by mature cohort (${O.maxAge.toFixed(1)} yr) → (${pct(r.pMax)} − ${pct(r.pNow)}) ÷ (100% − ${pct(r.pNow)}); Brier ${O.best.wf.toFixed(3)} vs ${O.steps[0].wf.toFixed(3)}`, x(r.odds))}
+        ${r.famF < 1 ? line('× Family factor', `off-list: parent/kin token family exists (${R.fam.fresh} of ${R.fam.kin} kin tokens were a new ticker)`, x(r.famF)) : ''}
+        ${line('= Implied value', `P25–P75 ${big(r.implied * 10 ** V.q.p25)}–${big(r.implied * 10 ** V.q.p75)} · rank ${r.rankLo}–${r.rankHi} across ${R.bootN} bootstrap refits`, big(r.implied), 'am')}
+      </table><p class="note">Tested, not kept in value: ${dropped.map((s) => `${R.TERMS[s.term].slice(2)} (${x(s.loo)}, ${x(s.wf)})`).join('; ')}.</p></section>
+      <section class="card"><h2>Nearest priced peers · their tokens trade</h2><table class="pt"><tr><th>Token</th><th>Category</th><th>TVL</th><th>Market cap</th><th>Cap / TVL</th><th>Cap ÷ held-out</th></tr>${peers}</table></section>
+    </div>
+    <div class="col">
+      <section class="card"><h2>Farm verdict <span class="pill ${P.verdict}">${P.verdict}</span><em>${usd(P.deposit)} deposit · ${pct(st.share, 1)} drop share · ${P.weeks} weeks · on ${esc(P.chain)}</em></h2>
+        <p class="vs ${P.verdict}">${P.verdict}: ${usd(P.deposit)} for ${P.weeks} weeks buys a modelled drop of ${usd(P.slice)} for ${usd(P.fees)} of gas and fees and ${P.hours.toFixed(1)} h of work: <b>${net(P.net)} net (${net(P.perHour)}/h)</b> against ${usd(P.tbill)} from the same money in a 4% T-bill. Fees are covered above ${pct(P.breakEvenShare, 2)} drop share and ${pct(P.breakEvenOdds, 1)} token odds.</p>
+        <div class="tiles">${tile('At risk', usd(P.deposit))}${tile(`Fees, ${P.weeks}w`, usd(P.fees))}${tile('Modelled drop', usd(P.slice))}${tile('Net of fees', net(P.net), cls(P.net))}${tile('Hands-on', P.hours.toFixed(1) + ' h')}${tile('Net per hour', net(P.perHour), cls(P.perHour))}</div>
+        <div class="sgwrap"><div><h4>Net by drop share × deposit <em>active cell outlined</em></h4>${sensitivityGrid(r)}</div>
+          <div><h4>Benchmarks</h4><table class="bm">
+            <tr><td>Same ${usd(P.deposit)} in 4% T-bill (${P.weeks}w)</td><td>${usd(P.tbill)}</td></tr>
+            <tr><td>Drop if token launches (no odds)</td><td>${usd(P.sliceIfLaunch)}</td></tr>
+            <tr><td>Fees covered above drop share</td><td>${pct(P.breakEvenShare, 2)}</td></tr>
+            <tr><td>Fees covered above token odds</td><td>${pct(P.breakEvenOdds, 1)}</td></tr>
+            <tr><td>Exit if TVL prints below (${P.exitDropPct.toFixed(1)}%)</td><td>${big(P.exitAt)}</td></tr>
+          </table></div></div>
+        <p class="note">Drop = implied value × drop share × deposit ÷ (TVL + deposit). FARM: net beats a 4% T-bill and $25/h; SKIP: fees exceed drop.</p></section>
+      <section class="card"><h2>Costed farm plan · ${P.steps.length} steps <em>at ${usd(P.deposit)} deposit on ${esc(P.chain)} (${usd(P.gas)}/tx)</em></h2><ol class="steps">${steps}</ol></section>
+    </div>
+  </div>`;
 }
 
-/** What the same plan nets at each drop share and deposit size: where the verdict flips. */
+/** Drop share x deposit sensitivity matrix showing exact net & verdict flips. */
 function sensitivityGrid(r) {
-  const deps = ['plan', 1000, 5000, 25000], cell = (sh, d) => { const p = M.buildFarmPlan(r.p, r.implied, { ...sc(), dep: d, share: sh }); return `<td class="${p.verdict}${sh === st.share && d === st.dep ? ' cur' : ''}">${net(p.net)}<small>${net(p.perHour)}/h</small></td>`; };
-  const planDep = M.buildFarmPlan(r.p, r.implied, { ...sc(), dep: 'plan' }).deposit;
-  return `<table class="sg"><tr><th>Share</th>${deps.map((d) => `<th>${d === 'plan' ? 'Plan ' + usd(planDep) : usd(d)}</th>`).join('')}</tr>${[0.05, 0.075, 0.1].map((sh) => `<tr><th>${pct(sh, 1)}</th>${deps.map((d) => cell(sh, d)).join('')}</tr>`).join('')}</table>`;
+  const deps = [1000, 3000, 'plan', 25000], planDep = M.buildFarmPlan(r.p, r.implied, r.odds, { ...sc(), dep: 'plan' }, R.exitDropPct).deposit;
+  const cell = (sh, d) => { const p = M.buildFarmPlan(r.p, r.implied, r.odds, { ...sc(), dep: d, share: sh }, R.exitDropPct); return `<td class="${p.verdict}${sh === st.share && d === st.dep ? ' cur' : ''}">${net(p.net)}</td>`; };
+  return `<table class="sg"><tr><th>Share</th>${deps.map((d) => `<th>${d === 'plan' ? 'Plan ' + usd(planDep) : usd(d)}</th>`).join('')}</tr>${[0.035, 0.07, 0.14].map((sh) => `<tr><th>${pct(sh, 1)}</th>${deps.map((d) => cell(sh, d)).join('')}</tr>`).join('')}</table>`;
 }
 
 const table = (cols, body) => `<table class="pt"><tr>${cols.map((c) => `<th>${c}</th>`).join('')}</tr>${body.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')}</table>`;
 function renderComps() {
   const list = V.D.map((d, j) => ({ d, c: V.comps[j] })).sort((a, b) => b.d.p.mcap_usd - a.d.p.mcap_usd);
-  return `<section class="card wide"><h2>Traded comps · ${V.n} tokens price the model <em>cap ÷ family TVL (every protocol carrying the ticker); never ranked</em></h2>${table(['Token', 'Category', 'Family TVL', 'Market cap', 'Cap / TVL', 'Fitted', 'Held-out fit', 'Actual ÷ held-out'],
+  return `<section class="card"><h2>Traded comps · ${V.n} clean standalone tokens price the model <em>cap ÷ family TVL; never ranked</em></h2>${table(['Token', 'Category', 'Family TVL', 'Market cap', 'Cap / TVL', 'Fitted', 'Held-out fit', 'Actual ÷ held-out'],
     list.map(({ d, c }) => [`${esc(d.p.name)} <small>${esc(d.p.symbol ?? '')}</small>`, esc(d.p.category ?? ''), big(d.tvl), big(d.p.mcap_usd), x(10 ** d.y), x(10 ** c.fit), x(10 ** c.held), x(10 ** (d.y - c.held))]))}</section>`;
 }
 function renderAside() {
   const why = { cex: 'exchange custody', bridge: 'bridge', lst: 'liquid staking / restaking', wrap: 'versioned or wrapped' };
   const list = S.protocols.map((p, i) => [p, R.cls[i]]).filter(([, c]) => why[c]).sort((a, b) => b[0].tvl_usd - a[0].tvl_usd);
-  return `<section class="card wide"><h2>Set aside · ${list.length} without a token that are not launches <em>plus ${ledger.trade + ledger.recorded} that record one</em></h2>${table(['Protocol', 'Category', 'TVL', 'Reason (house rule, applied below the floor too)'],
+  return `<section class="card"><h2>Set aside · ${list.length} non-launch protocols <em>plus ${ledger.trade + ledger.recorded} that already record a token</em></h2>${table(['Protocol', 'Category', 'TVL', 'Reason (house rule)'],
     list.map(([p, c]) => [esc(p.name), esc(p.category ?? ''), big(p.tvl_usd), why[c]]))}</section>`;
 }
 
 function render() {
   const r = st.slug && rows.find((x) => x.p.slug === st.slug), tab = (k, l) => `<button data-set="tab:${k}" class="${st.tab === k && !r ? 'on' : ''}">${l}</button>`;
-  app.innerHTML = `<header><div class="logo"><i></i><div><h1>Launch Radar Apex</h1><p>pre-token protocols · implied value = TVL × fitted multiple (if a token launches) × token odds (peers' record)</p></div></div>
+  app.innerHTML = `<header><div class="logo"><i></i><div><h1>Launch Radar Apex</h1><p>pre-token protocols, valued from their own record</p></div></div>
     <nav class="seg">${tab('board', `Board <s>${rows.length}</s>`)}${tab('comps', `Traded comps <s>${V.n}</s>`)}${tab('aside', `Set aside <s>${ledger.cex + ledger.bridge + ledger.lst + ledger.wrap}</s>`)}</nav>
-    <p class="meta">DefiLlama snapshot <b>${S.as_of}</b> · ${S.protocols.length} protocols · model refitted in this browser · no network</p></header>
+    <p class="meta">DefiLlama snapshot <b>${S.as_of}</b> · model refitted in this browser · no network</p></header>
     <main>${r ? renderDetail(r) : st.tab === 'comps' ? renderComps() : st.tab === 'aside' ? renderAside() : renderBoardView()}</main>`;
 }
 
@@ -224,10 +255,10 @@ app.addEventListener('input', (e) => {
   st.text = e.target.value; render(); const f = document.getElementById('find'); f.focus(); f.setSelectionRange(st.text.length, st.text.length);
 });
 
-// Screenshot views: ?view=board, ?view=detail (top FARM watchlist row), ?view=filtered.
+// Screenshot views: ?view=board, ?view=detail (top FARM watchlist row), ?view=filtered (FARM sorted by net/h).
 applyScenario();
 const view = q.get('view');
-if (view === 'detail') st.slug = q.get('p') || (rows.find((r) => r.tier === 'watch' && r.plan.verdict === 'FARM') || rows[0]).p.slug;
+if (view === 'detail') st.slug = q.get('p') || (rows.find((r) => r.tier === 'watch' && r.plan.verdict === 'FARM') || rows.find((r) => r.plan.verdict === 'FARM') || rows[0]).p.slug;
 if (view === 'filtered') Object.assign(st, { verdict: 'FARM', sort: 'ph', dir: 1 });
 render();
 document.body.setAttribute('aria-busy', 'false');

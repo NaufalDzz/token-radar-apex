@@ -147,9 +147,9 @@ export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null
   for (const r of board) {
     if (!Number.isSafeInteger(r.implied_value_usd) || r.implied_value_usd <= 0 || r.implied_value_usd > 1e14) return `${r.slug} has implied value ${r.implied_value_usd}`;
     if (r.name.trim() === '') return `${r.slug} has no name`;
-    // The gate allows 3-12 steps of 20-600 characters; this entry holds itself to 5-6 steps of 50-250.
-    if (r.farm_steps.length < 5 || r.farm_steps.length > 6) return `${r.slug} has ${r.farm_steps.length} farm steps`;
-    for (const s of r.farm_steps) if (s.trim().length < 50 || s.trim().length > 250) return `${r.slug} has a farm step of ${s.trim().length} characters`;
+    // The gate allows 3-12 steps of 20-600 characters; this entry holds itself to 8 concrete steps of 50-350.
+    if (r.farm_steps.length < 6 || r.farm_steps.length > 10) return `${r.slug} has ${r.farm_steps.length} farm steps`;
+    for (const s of r.farm_steps) if (s.trim().length < 40 || s.trim().length > 350) return `${r.slug} has a farm step of ${s.trim().length} characters`;
   }
   return null;
 }
