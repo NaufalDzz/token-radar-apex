@@ -57,6 +57,7 @@ export interface BoardRow {
   deposit_usd: number;
   fees_usd: number;
   net_usd: number;
+  excess_vs_tbill_usd: number;
   hours: number;
   farm_steps: string[];
 }

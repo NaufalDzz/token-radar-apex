@@ -44,7 +44,7 @@ const issue = boardIssue(board, snapshot);
 if (issue !== null) fail(`the model wrote a board the gate refuses: ${issue}`);
 
 mkdirSync(out, { recursive: true });
-writeFileSync(join(out, 'board.json'), `${JSON.stringify({ model: 'launch-radar-apex', as_of: snapshot.as_of, checksum_fnv1a: checksum, rows: board })}\n`);
+writeFileSync(join(out, 'board.json'), `${JSON.stringify({ model: 'launch-radar-apex-v4', as_of: snapshot.as_of, checksum_fnv1a: checksum, rows: board })}\n`);
 writeFileSync(join(out, 'data.js'), dataScript(snapshot, board, checksum));
 
 /** Replaces `to` with one directory's regular files (no dotfiles), so a rerun leaves no stale file; returns their names. */
